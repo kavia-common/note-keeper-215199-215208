@@ -15,6 +15,29 @@ if mongosh --port ${DB_PORT} --eval "db.adminCommand('ping')" > /dev/null 2>&1; 
     # Try to verify the database exists and user can connect
     if mongosh mongodb://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}?authSource=admin --eval "db.getName()" > /dev/null 2>&1; then
         echo "Database ${DB_NAME} is accessible with user ${DB_USER}."
+        # Ensure 'notes' collection and indexes exist in running instance
+        mongosh mongodb://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}?authSource=admin --quiet <<'JSEND'
+const dbName = '${DB_NAME}';
+const colName = 'notes';
+const dbh = db.getSiblingDB(dbName);
+
+// Create collection if it does not exist
+const exists = dbh.getCollectionNames().includes(colName);
+if (!exists) {
+  try { dbh.createCollection(colName); } catch(e) { /* ignore if race */ }
+}
+
+// Ensure indexes (non-destructive, create if missing)
+const coll = dbh.getCollection(colName);
+
+// updatedAt desc index
+coll.createIndex({ updatedAt: -1 }, { name: 'idx_updatedAt_desc', background: true });
+
+// optional title index (sparse to be non-destructive)
+coll.createIndex({ title: 1 }, { name: 'idx_title', sparse: true, background: true });
+
+print('Ensured notes collection and indexes on running MongoDB');
+JSEND
     else
         echo "MongoDB is running but authentication might not be configured."
     fi
@@ -110,14 +133,33 @@ if (db.getUser("appuser") == null) {
     });
 }
 
-print("MongoDB setup complete!");
+// Ensure notes collection and indexes
+const colName = "notes";
+const exists = db.getCollectionNames().includes(colName);
+if (!exists) {
+    try { db.createCollection(colName); } catch (e) { /* ignore */ }
+}
+
+// Index on updatedAt desc for sorting latest notes first
+db.getCollection(colName).createIndex(
+  { updatedAt: -1 },
+  { name: "idx_updatedAt_desc", background: true }
+);
+
+// Optional title index (sparse so only docs with title are indexed)
+db.getCollection(colName).createIndex(
+  { title: 1 },
+  { name: "idx_title", sparse: true, background: true }
+);
+
+print("MongoDB setup complete, ensured 'notes' collection and indexes.");
 EOF
 
 # Save connection command to a file
 echo "mongosh mongodb://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}?authSource=admin" > db_connection.txt
 echo "Connection string saved to db_connection.txt"
 
-# Save environment variables to a file
+# Save environment variables to a file (no changes needed, keep as-is)
 cat > db_visualizer/mongodb.env << EOF
 export MONGODB_URL="mongodb://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/?authSource=admin"
 export MONGODB_DB="${DB_NAME}"
